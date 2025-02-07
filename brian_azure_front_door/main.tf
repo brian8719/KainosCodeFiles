@@ -1,76 +1,72 @@
-resource "random_pet" "rg-name" {
-  prefix = var.resource_group_name_prefix
-}
-
 resource "azurerm_resource_group" "rg" {
-  name     = random_pet.rg-name.id
+  name     = var.resource_group_name
   location = var.resource_group_location
 }
 
-resource "random_id" "front_door_name" {
+resource "random_id" "front_door_endpoint_name" {
   byte_length = 8
 }
 
 locals {
-  front_door_name                         = "afd-${lower(random_id.front_door_name.hex)}"
-  front_door_frontend_endpoint_name       = "frontEndEndpoint"
-  front_door_load_balancing_settings_name = "loadBalancingSettings"
-  front_door_health_probe_settings_name   = "healthProbeSettings"
-  front_door_routing_rule_name            = "routingRule"
-  front_door_backend_pool_name            = "backendPool"
+  front_door_profile_name      = "MyFrontDoor"
+  front_door_endpoint_name     = "afd-${lower(random_id.front_door_endpoint_name.hex)}"
+  front_door_origin_group_name = "MyOriginGroup"
+  front_door_origin_name       = "MyAppServiceOrigin"
+  front_door_route_name        = "MyRoute"
 }
 
-resource "azurerm_frontdoor" "main" {
-  name                = local.front_door_name
+resource "azurerm_cdn_frontdoor_profile" "my_front_door" {
+  name                = local.front_door_profile_name
   resource_group_name = azurerm_resource_group.rg.name
+  sku_name            = var.front_door_sku_name
+}
 
-  frontend_endpoint {
-    name                     = local.front_door_frontend_endpoint_name
-    host_name                = "${local.front_door_name}.azurefd.net"
-    session_affinity_enabled = false
-  }
+resource "azurerm_cdn_frontdoor_endpoint" "my_endpoint" {
+  name                     = local.front_door_endpoint_name
+  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.my_front_door.id
+}
 
-  backend_pool_load_balancing {
-    name                        = local.front_door_load_balancing_settings_name
+resource "azurerm_cdn_frontdoor_origin_group" "my_origin_group" {
+  name                     = local.front_door_origin_group_name
+  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.my_front_door.id
+  session_affinity_enabled = true
+
+  load_balancing {
     sample_size                 = 4
-    successful_samples_required = 2
+    successful_samples_required = 3
   }
 
-  backend_pool_health_probe {
-    name                = local.front_door_health_probe_settings_name
+  health_probe {
     path                = "/"
-    protocol            = "Http"
-    interval_in_seconds = 120
+    request_type        = "HEAD"
+    protocol            = "Https"
+    interval_in_seconds = 100
   }
+}
 
-  backend_pool {
-    name = local.front_door_backend_pool_name
-    backend {
-      host_header = var.backend_address
-      address     = var.backend_address
-      http_port   = 80
-      https_port  = 443
-      weight      = 50
-      priority    = 1
-    }
+resource "azurerm_cdn_frontdoor_origin" "my_app_service_origin" {
+  name                          = local.front_door_origin_name
+  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.my_origin_group.id
 
-    load_balancing_name = local.front_door_load_balancing_settings_name
-    health_probe_name   = local.front_door_health_probe_settings_name
-  }
+  enabled                        = true
+  host_name                      = azurerm_windows_web_app.app.default_hostname
+  http_port                      = 80
+  https_port                     = 443
+  origin_host_header             = azurerm_windows_web_app.app.default_hostname
+  priority                       = 1
+  weight                         = 1000
+  certificate_name_check_enabled = true
+}
 
-  backend_pool_settings {
-    backend_pools_send_receive_timeout_seconds   = 0
-    enforce_backend_pools_certificate_name_check = false
-  }
+resource "azurerm_cdn_frontdoor_route" "my_route" {
+  name                          = local.front_door_route_name
+  cdn_frontdoor_endpoint_id     = azurerm_cdn_frontdoor_endpoint.my_endpoint.id
+  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.my_origin_group.id
+  cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.my_app_service_origin.id]
 
-  routing_rule {
-    name               = local.front_door_routing_rule_name
-    accepted_protocols = ["Http", "Https"]
-    patterns_to_match  = ["/*"]
-    frontend_endpoints = [local.front_door_frontend_endpoint_name]
-    forwarding_configuration {
-      forwarding_protocol = "MatchRequest"
-      backend_pool_name   = local.front_door_backend_pool_name
-    }
-  }
+  supported_protocols    = ["Http", "Https"]
+  patterns_to_match      = ["/*"]
+  forwarding_protocol    = "HttpsOnly"
+  link_to_default_domain = true
+  https_redirect_enabled = true
 }

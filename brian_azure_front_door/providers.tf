@@ -12,6 +12,8 @@ terraform {
     }
   }
 }
+# Include Subscripiton ID here to ensure it lands in the correct subscription/ tenant
 provider "azurerm" {
+  subscription_id = "168b5162-e625-42f1-994a-dfcfff0433bb"
   features {}
 }
